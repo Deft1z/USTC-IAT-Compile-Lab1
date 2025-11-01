@@ -59,12 +59,12 @@ Value* CminusfBuilder::visit(ASTNum &node) {
 }
 
 Value* CminusfBuilder::visit(ASTVarDeclaration &node) {
-    // 判断变量名是否为空
+    // 判断变量名是否为空，为空报错，返回
     if (node.id.empty()) {
         std::cerr << "Error: Variable name is empty!" << std::endl;
         return nullptr;
     }
-    // 取出元素类型
+    // 取出元素类型为INT或者FLOAT
     Type *elem_type = (node.type == TYPE_INT) ? INT32_T : FLOAT_T;
     
     Value *var_val = nullptr;
@@ -208,7 +208,7 @@ Value* CminusfBuilder::visit(ASTExpressionStmt &node) {
 }
 
 Value* CminusfBuilder::visit(ASTSelectionStmt &node) {
-    // 1) 条件 -> i1
+    // 条件 -> i1
     Value *cond = node.expression->accept(*this);
     if (cond->get_type() == INT32_T)       cond = builder->create_icmp_ne(cond, CONST_INT(0));
     else if (cond->get_type() == FLOAT_T)  cond = builder->create_fcmp_ne(cond, CONST_FP(0.0f));
@@ -233,7 +233,7 @@ Value* CminusfBuilder::visit(ASTSelectionStmt &node) {
         builder->create_cond_br(cond, thenBB, contBB);
     }
 
-    // 2) then 分支
+    //  then分支 
     builder->set_insert_point(thenBB);
     node.if_statement->accept(*this);  // 递归处理 then 分支
     {
@@ -244,7 +244,7 @@ Value* CminusfBuilder::visit(ASTSelectionStmt &node) {
         }
     }
 
-    // 3) else 分支（如果有）
+    // else 分支（如果有）
     if (node.else_statement) {
         builder->set_insert_point(elseBB);
         node.else_statement->accept(*this);  // 递归处理 else 分支
@@ -254,14 +254,12 @@ Value* CminusfBuilder::visit(ASTSelectionStmt &node) {
         }
     }
     
-    // 4) 最后确保插入点切换到 contBB
+    //  确保切换到 contBB
     builder->set_insert_point(contBB);
     return nullptr;
 }
 
 Value* CminusfBuilder::visit(ASTIterationStmt &node) {
-    // TODO: This function is empty now.
-    // Add some code here.
     auto *func   = context.func;
     auto *preBB  = builder->get_insert_block();
     
@@ -275,7 +273,7 @@ Value* CminusfBuilder::visit(ASTIterationStmt &node) {
     auto *bodyBB = BasicBlock::create(module.get(), body_name, func);
     auto *exitBB = BasicBlock::create(module.get(), exit_name, func);
 
-    // 从当前块跳到条件块（当前块若未终止）
+    // 当前块若未终止，从当前块跳到条件块
     if (preBB && !preBB->is_terminated()) {
         builder->create_br(condBB);
     }
@@ -301,7 +299,7 @@ Value* CminusfBuilder::visit(ASTIterationStmt &node) {
         }
     }
 
-    // 出口作为后续插入点
+    // 出口，作为后续插入点
     builder->set_insert_point(exitBB);
     return nullptr;
 }
@@ -346,7 +344,7 @@ Value* CminusfBuilder::visit(ASTVar &node) {
     }
 
     if(node.expression) {
-        // 先计算下标并转成 i32
+        // 先计算下标 并转成i32
         bool orig_lv = context.require_lvalue;
         context.require_lvalue = false;
         auto idx = node.expression->accept(*this);
@@ -367,7 +365,7 @@ Value* CminusfBuilder::visit(ASTVar &node) {
         auto cond_neg = builder->create_icmp_ge(idx, CONST_INT(0));
         builder->create_cond_br(cond_neg, okBB, negBB);
 
-        // 负下标分支：调用 neg_idx_except() 并回跳到 okBB
+        // 负下标分支
         builder->set_insert_point(negBB);
         auto wrong = scope.find("neg_idx_except");
         if (wrong) {
@@ -398,6 +396,7 @@ Value* CminusfBuilder::visit(ASTVar &node) {
             return builder->create_load(baseAddr);
         }
     } else {
+
         // 无下标：访问标量或数组名
         if (context.require_lvalue) {
             context.require_lvalue = false;
@@ -411,6 +410,7 @@ Value* CminusfBuilder::visit(ASTVar &node) {
             }
         }
     }
+
     return nullptr;
 }
 
@@ -418,6 +418,7 @@ Value* CminusfBuilder::visit(ASTAssignExpression &node) {
     auto *expr_result = node.expression->accept(*this);
     context.require_lvalue = true;
     auto *var_addr = node.var->accept(*this);
+
     if (var_addr->get_type()->get_pointer_element_type() !=
         expr_result->get_type()) {
         if (expr_result->get_type() == INT32_T) {
@@ -426,6 +427,7 @@ Value* CminusfBuilder::visit(ASTAssignExpression &node) {
             expr_result = builder->create_fptosi(expr_result, INT32_T);
         }
     }
+
     builder->create_store(expr_result, var_addr);
     return expr_result;
 }
@@ -433,12 +435,15 @@ Value* CminusfBuilder::visit(ASTAssignExpression &node) {
 Value* CminusfBuilder::visit(ASTSimpleExpression &node) {
     // 左边
     Value *lhs = node.additive_expression_l->accept(*this);
+
     // 直接返回左侧结果
     if (node.additive_expression_r == nullptr) {
         return lhs;
     }
+
     // 有比较：算出右边
     Value *rhs = node.additive_expression_r->accept(*this);
+
     // 提升到同一类型 
     auto *LT = lhs->get_type();
     auto *RT = rhs->get_type();
@@ -457,30 +462,29 @@ Value* CminusfBuilder::visit(ASTSimpleExpression &node) {
             case OP_GE:  return builder->create_fcmp_ge(lhs, rhs);
         }
     } else {
-        // LightIR的 icmp 要求两边都是 i3
-        // 如果碰到 i1，先 zext 到 i32
-    if (lhs->get_type() == INT1_T) {
-        lhs = builder->create_zext(lhs, INT32_T);
-    }
-    if (rhs->get_type() == INT1_T) {
-        rhs = builder->create_zext(rhs, INT32_T);
-    }
-    if (lhs->get_type()->is_float_type()) {
-        lhs = builder->create_fptosi(lhs, INT32_T);
-    }
-    if (rhs->get_type()->is_float_type()) {
-        rhs = builder->create_fptosi(rhs, INT32_T);
+        if (lhs->get_type() == INT1_T) {
+            lhs = builder->create_zext(lhs, INT32_T);
+        }
+        if (rhs->get_type() == INT1_T) {
+            rhs = builder->create_zext(rhs, INT32_T);
+        }
+        if (lhs->get_type()->is_float_type()) {
+            lhs = builder->create_fptosi(lhs, INT32_T);
+        }
+        if (rhs->get_type()->is_float_type()) {
+            rhs = builder->create_fptosi(rhs, INT32_T);
+        }
+
+        switch (node.op) {
+            case OP_EQ:  return builder->create_icmp_eq(lhs, rhs);
+            case OP_NEQ: return builder->create_icmp_ne(lhs, rhs);
+            case OP_LT:  return builder->create_icmp_lt(lhs, rhs);
+            case OP_LE:  return builder->create_icmp_le(lhs, rhs);
+            case OP_GT:  return builder->create_icmp_gt(lhs, rhs);
+            case OP_GE:  return builder->create_icmp_ge(lhs, rhs);
+        }
     }
 
-    switch (node.op) {
-        case OP_EQ:  return builder->create_icmp_eq(lhs, rhs);
-        case OP_NEQ: return builder->create_icmp_ne(lhs, rhs);
-        case OP_LT:  return builder->create_icmp_lt(lhs, rhs);
-        case OP_LE:  return builder->create_icmp_le(lhs, rhs);
-        case OP_GT:  return builder->create_icmp_gt(lhs, rhs);
-        case OP_GE:  return builder->create_icmp_ge(lhs, rhs);
-    }
-    }
     return nullptr;
 }
 
@@ -493,22 +497,24 @@ Value* CminusfBuilder::visit(ASTAdditiveExpression &node) {
     auto *r_val = node.term->accept(*this);
     bool is_int = promote(&*builder, &l_val, &r_val);
     Value *ret_val = nullptr;
+
     switch (node.op) {
-    case OP_PLUS:
-        if (is_int) {
-            ret_val = builder->create_iadd(l_val, r_val);
-        } else {
-            ret_val = builder->create_fadd(l_val, r_val);
-        }
-        break;
-    case OP_MINUS:
-        if (is_int) {
-            ret_val = builder->create_isub(l_val, r_val);
-        } else {
-            ret_val = builder->create_fsub(l_val, r_val);
-        }
-        break;
+        case OP_PLUS:
+            if (is_int) {
+                ret_val = builder->create_iadd(l_val, r_val);
+            } else {
+                ret_val = builder->create_fadd(l_val, r_val);
+            }
+            break;
+        case OP_MINUS:
+            if (is_int) {
+                ret_val = builder->create_isub(l_val, r_val);
+            } else {
+                ret_val = builder->create_fsub(l_val, r_val);
+            }
+            break;
     }
+
     return ret_val;
 }
 
@@ -523,21 +529,21 @@ Value* CminusfBuilder::visit(ASTTerm &node) {
 
     Value *ret_val = nullptr;
     switch (node.op) {
-    case OP_MUL:
-        if (is_int) {
-            ret_val = builder->create_imul(l_val, r_val);
-        } else {
-            ret_val = builder->create_fmul(l_val, r_val);
+        case OP_MUL:
+            if (is_int) {
+                ret_val = builder->create_imul(l_val, r_val);
+            } else {
+                ret_val = builder->create_fmul(l_val, r_val);
+            }
+            break;
+        case OP_DIV:
+            if (is_int) {
+                ret_val = builder->create_isdiv(l_val, r_val);
+            } else {
+                ret_val = builder->create_fdiv(l_val, r_val);
+            }
+            break;
         }
-        break;
-    case OP_DIV:
-        if (is_int) {
-            ret_val = builder->create_isdiv(l_val, r_val);
-        } else {
-            ret_val = builder->create_fdiv(l_val, r_val);
-        }
-        break;
-    }
     return ret_val;
 }
 
@@ -567,5 +573,6 @@ Value* CminusfBuilder::visit(ASTCall &node) {
         args.push_back(v);
         ++param_ty_it;
     }
+    
     return builder->create_call(callee, args);
 }
